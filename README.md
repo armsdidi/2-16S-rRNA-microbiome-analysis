@@ -2,7 +2,7 @@
 
 ## Visão geral
 
-Este repositório contém scripts em **Shell** e **R** desenvolvidos para a análise de dados de sequenciamento de amplicons do gene **16S rRNA** e a caracterização de comunidades bacterianas.
+Este repositório contém scripts em **Shell** e **R** desenvolvidos para a análise de dados de sequenciamento de amplicons do gene **16S rRNA** e a caracterização de comunidades bacterianas em tecidos gástricos tumorais e não tumorais.
 
 O fluxo de trabalho abrange desde a obtenção dos dados brutos em repositórios públicos até a inferência de variantes de sequência de amplicon (**ASVs**), atribuição taxonômica, reconstrução filogenética e análises ecológicas da comunidade microbiana.
 
@@ -75,9 +75,9 @@ Realiza a caracterização taxonômica e ecológica da comunidade microbiana.
 
 As análises incluem prevalência e abundância dos táxons, composição taxonômica, abundância relativa, diversidade alfa, diversidade beta, ordenação por Análise de Coordenadas Principais (**PCoA**) e abundância diferencial.
 
-A diversidade alfa pode ser avaliada por métricas como **riqueza observada**, **Chao1**, **Shannon** e **Simpson**.
+A diversidade alfa foi avaliada por métricas como **Riqueza observada**, **Chao1**, e os índices de **Shannon** e **Simpson**.
 
-A diversidade beta pode ser estimada utilizando **Bray–Curtis**, **Jaccard**, **Weighted UniFrac** e **Unweighted UniFrac**. Diferenças na estrutura das comunidades podem ser testadas por **PERMANOVA** e **PERMDISP**, enquanto os táxons diferencialmente abundantes podem ser identificados por **LEfSe (Linear Discriminant Analysis Effect Size)**.
+A diversidade beta foi estimada utilizando **Bray–Curtis**, **Jaccard**, **Weighted UniFrac** e **Unweighted UniFrac**. Diferenças na estrutura das comunidades foram testadas por **PERMANOVA**, enquanto os táxons diferencialmente abundantes foram identificados por **LEfSe (Linear Discriminant Analysis Effect Size)**.
 
 **Principais resultados:** estatísticas descritivas, testes estatísticos e visualizações da composição, diversidade e abundância diferencial da comunidade microbiana.
 
