@@ -4,8 +4,6 @@
 
 Este repositório contém scripts em **Shell** e **R** desenvolvidos para a análise de dados de sequenciamento de amplicons do gene **16S rRNA** e a caracterização de comunidades bacterianas em tecidos gástricos tumorais e não tumorais.
 
-O fluxo de trabalho abrange desde a obtenção dos dados brutos em repositórios públicos até a inferência de variantes de sequência de amplicon (**ASVs**), atribuição taxonômica, reconstrução filogenética e análises ecológicas da comunidade microbiana.
-
 As etapas incluem download do conjunto de dados, controle de qualidade, processamento das leituras, remoção de erros, união das leituras paired-end, remoção de quimeras, inferência de ASVs, classificação taxonômica, construção da árvore filogenética, composição taxonômica, diversidade alfa e beta e abundância diferencial.
 
 ---
