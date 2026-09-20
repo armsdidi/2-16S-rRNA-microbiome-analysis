@@ -1,0 +1,813 @@
+---
+title: "5_Caracterização_da_comunidade_microbiana"
+author: Diego Pereira
+format: html
+toc: true
+toc-depth: 3
+embed-resources: true
+number-sections: true
+page-layout: full
+fontsize: 12pt
+mainfont: Arial
+editor: visual
+editor_options: 
+  chunk_output_type: console
+chunk_output_type: console
+---
+
+# Carregando os pacotes
+
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(reshape2)
+library(readxl)
+library(openxlsx)
+library(tibble)
+library(vegan)
+library(ggplot2)
+library(ggpubr)
+library(colorspace)
+library(gridExtra)
+library(microbiome)
+library(phyloseq)
+library(microbiomeMarker)
+library(circlize)
+library(scales)
+library(patchwork)
+library(cowplot)
+library(ggvenn)
+library(ComplexHeatmap)
+library(ade4)
+library(cluster)
+library(philentropy)
+library(factoextra)
+library(xgboost)
+library(SHAPforxgboost)
+library(caret)
+library(pROC)
+library(survival)
+library(survminer)
+library(glmnet)
+library(SpiecEasi)
+library(igraph)
+library(ggdist)
+```
+
+# Carregando os dados
+
+```{r message=FALSE, warning=FALSE}
+# Objeto phyloseq
+load("16S_DADA2_OUTPUT/16S_phyloseq_tree.RData")
+```
+
+# Composição e abundância bacteriana global
+
+## Abundância de leituras bacterianas por tecido
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=8}
+# Extrair o total de reads por amostra
+sample_reads <- tibble(
+  Sample = sample_names(ps),
+  total_reads = as.numeric(phyloseq::sample_sums(ps)))
+
+# Extrair os metadados do objeto phyloseq
+metadata <- data.frame(sample_data(ps)) %>%
+  rownames_to_column(var = "Sample")
+rownames(metadata) = metadata$Sample
+          
+# Juntar o total de reads com os metadados
+sample_reads <- sample_reads %>%
+  left_join(metadata, by = "Sample") %>%
+  filter(Disease %in% c("FD", "GC", "GU")) %>%
+  mutate(Disease = factor(Disease, 
+                          levels = c("FD", "GC", "GU")))
+
+# Somar reads por grupo
+disease_sums <- sample_reads %>%
+  group_by(Disease) %>%
+  summarise(total_reads = sum(total_reads), 
+            .groups = "drop") %>%
+  mutate(Prevalence = (total_reads / sum(total_reads)) * 100)
+
+# Comparações (Wilcoxon)
+comparisons_wilcox <- list(
+  c("FD", "GC"),
+  c("FD", "GU"),
+  c("GC", "GU"))
+
+# Raincloud plot
+p.reads = ggplot(sample_reads, aes(x = Disease, y = total_reads, 
+                                  fill = Disease, color = Disease)) + 
+  stat_halfeye(adjust = 0.6, width = 0.6, justification = -0.3, .width = 0, 
+               point_colour = NA, alpha = 0.5) +
+  geom_boxplot(width = 0.18, outlier.shape = NA, alpha = 0.6, linewidth = 0.8) +
+  geom_jitter(width = 0.08, size = 2, alpha = 0.8) +
+  scale_color_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  scale_fill_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  scale_y_log10() +
+  labs(x = "", y = "Microbial abundance (log10-transformed reads)") +
+  theme_classic() +
+  theme(legend.position = "right", 
+        legend.title = element_text(size = 12, face = "bold"),
+        axis.text.x = element_text(colour = "black", size = 10),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(colour = "black", face = "bold", size = 10)) +
+  stat_compare_means(comparisons = comparisons_wilcox, method = "wilcox.test", 
+                     p.adjust.method = "BH", label = "p.format", size = 4)
+print(p.reads)
+```
+
+## Diagrama de Venn
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=8}
+# Função para obter os táxons presentes em cada grupo:
+get_group_taxa <- function(group_name) {
+  
+  # Identificar as amostras do grupo
+  group_samples <- rownames(metadata)[
+    metadata$Disease == group_name
+  ]
+  
+  # Criar um objeto phyloseq somente com essas amostras
+  ps_group <- prune_samples(group_samples, ps)
+  
+  # Manter os táxons com pelo menos uma read no grupo
+  taxa_names(ps_group)[
+    taxa_sums(ps_group) > 0
+  ]
+}
+
+# Obter os táxons presentes em cada grupo
+FD_taxons <- get_group_taxa("FD")
+GC_taxons <- get_group_taxa("GC")
+GU_taxons <- get_group_taxa("GU")
+
+# Criar a lista para o diagrama
+list_taxons <- list(
+  "FD" = FD_taxons,
+  "GC" = GC_taxons,
+  "GU" = GU_taxons)
+
+# Verificar o número total de táxons em cada grupo
+sapply(list_taxons, length)
+
+# Diagrama de Venn
+venn_plot <- ggvenn(
+  list_taxons,
+  fill_color = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081"),
+  stroke_color = NA,
+  stroke_size = 0.5,
+  fill_alpha = 0.8,
+  text_size = 4,
+  text_color = "white",
+  set_name_size = 6,
+  set_name_color = "black")
+print(venn_plot)
+```
+
+## Top15 gêneros bacterianos (barplot)
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=8}
+# Criar uma cópia do objeto
+ps_genus <- ps
+
+# Substituir gêneros ausentes ou não classificados
+tax_table_genus <- as(tax_table(ps_genus), "matrix")
+tax_table_genus[, "Genus"][
+  is.na(tax_table_genus[, "Genus"]) |
+    tax_table_genus[, "Genus"] == "" |
+    tax_table_genus[, "Genus"] == "NA"] <- "Unclassified"
+tax_table(ps_genus) <- tax_table(tax_table_genus)
+
+# Aglomerar os ASVs no nível de gênero
+ps_genus <- tax_glom(
+  ps_genus,
+  taxrank = "Genus",
+  NArm = FALSE)
+
+# Transformar as contagens em abundância relativa por amostra
+ps_genus_relative <- transform_sample_counts(
+  ps_genus,function(x) {if (sum(x) == 0) x else x / sum(x)})
+
+# Transformar o objeto phyloseq em data frame longo
+df_long <- psmelt(ps_genus_relative) %>%
+  filter(Disease %in% c("FD", "GC", "GU")) %>%
+  mutate(Disease = factor(Disease, 
+                          levels = c("FD", "GC", "GU")), 
+         Genus = as.character(Genus))
+
+# Selecionar os 15 gêneros mais abundantes
+top15 <- df_long %>%
+  group_by(Genus) %>%
+  summarise(mean_abundance = mean(Abundance), 
+            .groups = "drop") %>%
+  arrange(desc(mean_abundance)) %>%
+  slice_head(n = 15) %>%
+  pull(Genus)
+
+# Agrupar os demais gêneros como “Others”
+df_grouped <- df_long %>%
+  mutate(Genera = if_else(Genus %in% 
+                          top15, Genus, "Others")) %>%
+  group_by(Disease, Sample, Genera) %>%
+  summarise(Abundance = sum(Abundance), 
+            .groups = "drop") %>%
+  group_by(Disease, Genera) %>%
+  summarise(Abundance = mean(Abundance), 
+            .groups = "drop")
+
+# Ordem da legenda
+ordem_legenda <- c(top15, "Others")
+df_grouped <- df_grouped %>%
+  mutate(Genera = factor(Genera, levels = ordem_legenda))
+
+# Paleta de cores
+my_colors <- c(
+  "#084081", "#0868AC", "#1F78B4", "#3B99D3",
+  "#4EB3D3", "#1F9E89", "#38AFA9", "#2B7A78",
+  "#67000D", "#A50F15", "#CB181D", "#EF3B2C",
+  "#FB6A4A", "#FC4E2A", "#E31A1C", "#B10026")
+names(my_colors) <- ordem_legenda
+
+# Barplot
+barplot <- ggplot(df_grouped,aes(x = Disease, y = Abundance, fill = Genera)) +
+  geom_col(position = "stack", width = 0.75) +
+  scale_fill_manual(values = my_colors, breaks = ordem_legenda, drop = FALSE) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), 
+                     expand = expansion(mult = c(0, 0.02))) +
+  labs(x = "", y = "Mean relative abundance", fill = "Genus") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.y = element_text(size = 10),
+        legend.position = "right",
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.text = element_text(face = "italic", size = 10),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white", color = NA),
+        plot.background = element_rect(fill = "white", color = NA))
+print(barplot)
+```
+
+## Top40 gêneros bacterianos (heatmap)
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=8}
+# Selecionando o top40 gêneros bacterianos (abundância média geral)
+top_40_global = df_long %>%
+  group_by(Genus) %>%
+  summarise(mean_abundance = mean(Abundance), .groups = "drop") %>%
+  arrange(desc(mean_abundance)) %>%
+  slice(1:40) %>%
+  pull(Genus)
+
+# Converter a tabela de abundância em matriz
+mat <- as(otu_table(ps_genus_relative), "matrix")
+
+# Garantir táxons nas linhas
+if (!taxa_are_rows(ps_genus_relative)) {
+  mat <- t(mat)}
+
+# Obter a classificação em nível de gênero
+taxonomy <- as(tax_table(ps_genus_relative), "matrix")
+
+# Associar os IDs taxonômicos aos nomes dos gêneros
+genus_names <- taxonomy[rownames(mat), "Genus"]
+
+# Selecionar os IDs correspondentes aos gêneros do Top 40
+top_40_ids <- rownames(mat)[
+  genus_names %in% top_40_global]
+
+# Filtrar a matriz
+mat_top40 <- mat[top_40_ids, , drop = FALSE]
+
+# Substituir os IDs das linhas pelos nomes dos gêneros
+rownames(mat_top40) <- genus_names[top_40_ids]
+
+# Garantir alinhamento da coluna de anotacão
+annotation_col = data.frame(Disease = sample_data(ps_genus_relative)$Disease)
+rownames(annotation_col) = rownames(sample_data(ps_genus_relative))
+annotation_col = annotation_col[colnames(mat), , drop = FALSE]
+
+# Anotação superior (Disease)
+col_ha = HeatmapAnnotation(
+  Disease = annotation_col$Disease,
+  col = list(Disease = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")),
+  show_annotation_name = FALSE,
+  show_legend = FALSE)
+
+# Legenda Disease
+lgd = Legend(
+  title = "Disease",
+  at = c("FD","GC", "GU"),
+  legend_gp = gpar(fill = c("#238B45", "#A50F15", "#084081")))
+
+# Cores do intervalo de abundância
+col_fun = colorRamp2(
+  c(0, 0.001, 0.01, 0.1, 1),
+  c("#2166AC", "#67A9CF", "#F7F7F7", "#F4A582", "#B2182B"))
+
+# Heatmap
+ht = Heatmap(
+  mat_top40,
+  name = "Abundance",
+  col = col_fun,
+  top_annotation = col_ha,
+  show_heatmap_legend = FALSE,
+  show_row_names = TRUE,
+  row_names_side = "right",
+  row_names_gp = gpar(fontsize = 12, fontface = "italic"),
+  show_column_names = FALSE,
+  cluster_rows = TRUE,
+  cluster_columns = TRUE)
+
+# Legenda do heatmap
+lgd_heatmap = Legend(
+  col_fun = ht@matrix_color_mapping@col_fun,
+  title = "Abundance")
+
+# Juntar legendas
+lgd_combined = packLegend(
+  lgd,
+  lgd_heatmap,
+  direction = "vertical",
+  gap = unit(3, "mm"))
+
+# Plotar
+draw(ht,
+     heatmap_legend_side = "right",
+     annotation_legend_list = list(lgd_combined))
+```
+
+## Microbioma central
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=8}
+# Definindo presença e ausência
+df_long$Presence = ifelse(df_long$Abundance > 0.001, 1, 0)
+
+# Calculando prevalência por Genus e Disease
+prev = df_long %>%
+  group_by(Disease, Genus) %>%
+  summarise(prevalence = mean(Presence) * 100, 
+            abundance = mean(Abundance), 
+            .groups = "drop")
+
+# Filtrando o microbioma central (50%)
+core = prev %>%
+  filter(prevalence >= 50)
+
+# Definindo a ordem no plot
+core$Genus <- factor(core$Genus, 
+                     levels = rev(sort(unique(core$Genus))))
+
+# Bubble plot
+core_plot = ggplot(core, aes(x = Disease, y = Genus)) +
+  geom_point(aes(size = prevalence, color = abundance), alpha = 0.8) +
+  scale_color_viridis_c(option = "viridis") +
+  theme_bw() +
+  labs(x = "", y = "Genus", size = "Prevalence (%)", color = "Mean abundance") +
+  theme(
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.position = "right",
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(colour = "black", size = 10, face = "italic"),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10))
+print(core_plot)
+```
+
+# Diversidade alfa
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+# Gerando os indicadores globais
+indices_alfa = microbiome::alpha(ps, index = "all")
+
+# Criar a coluna com os nomes das amostras
+indices_alfa$Sample <- rownames(indices_alfa)
+
+# Extrair a sample_data do objeto phyloseq
+metadata <- data.frame(sample_data(ps))
+
+# Criar a coluna com os nomes das amostras
+metadata$Sample <- rownames(metadata)
+
+# Juntar os índices de diversidade alfa com os metadados
+indices_alfa <- merge(indices_alfa, metadata, by = "Sample", all.x = TRUE)
+
+# Comparações (Wilcoxon)
+comparisons_wilcox <- list(
+  c("FD", "GC"),
+  c("FD", "GU"),
+  c("GC", "GU"))
+
+# Riqueza observada
+p.richness = ggplot(indices_alfa, aes(x = Disease, y = observed, 
+                                      fill = Disease, color = Disease)) +
+  stat_halfeye(adjust = 0.6, width = 0.6, justification = -0.3, .width = 0, 
+               point_colour = NA, alpha = 0.5) +
+  geom_boxplot(width = 0.18, outlier.shape = NA, alpha = 0.6, linewidth = 0.8) + 
+  geom_jitter(width = 0.08, size = 2, alpha = 0.8) +
+  scale_color_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  scale_fill_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  labs(x = "", y = "Observed richness") +
+  theme_classic() +
+  theme(legend.position = "none",
+    axis.text = element_text(size = 11, colour = "black"),
+    axis.title = element_text(size = 12)) +
+  stat_compare_means(comparisons = comparisons_wilcox, method = "wilcox.test", 
+                     p.adjust.method = "BH", label = "p.format", size = 4)
+
+# Shannon
+p.shannon = ggplot(data = indices_alfa, aes(x = Disease, y = diversity_shannon, 
+                                            fill = Disease, color = Disease)) +
+  stat_halfeye(adjust = 0.6, width = 0.6, justification = -0.3, .width = 0, 
+               point_colour = NA, alpha = 0.5) +
+  geom_boxplot(width = 0.18, outlier.shape = NA, alpha = 0.6, linewidth = 0.8) +
+  geom_jitter(width = 0.08, size = 2, alpha = 0.8) +
+  scale_color_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  scale_fill_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  labs(x = "", y = "Shannon index") +
+  theme_classic() +
+  theme(legend.position = "none",
+    axis.text = element_text(size = 11, colour = "black"),
+    axis.title = element_text(size = 12)) +
+  stat_compare_means(comparisons = comparisons_wilcox, method = "wilcox.test", 
+                     p.adjust.method = "BH", label = "p.format", size = 4)
+
+# Raincloud plot
+plot_tissue <- (p.richness + p.shannon) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "top", 
+        legend.title = element_text(size = 12, face = "bold"))
+print(plot_tissue)
+```
+
+# Diversidade beta
+
+## Dissimilaridade de Bray Curtis
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+# Transformar as contagens em abundância relativa por amostra
+ps_rel <- transform_sample_counts(
+  ps,function(x) {if (sum(x) == 0) x else x / sum(x)})
+
+# Calculando a matriz de dissimilaridade de Bray-Curtis
+bray_curtis = phyloseq::distance(ps_rel, method = "bray")
+
+# Realizando a PCoA
+pcoa_result_bray = cmdscale(bray_curtis, k = 3, eig = TRUE, add = TRUE)
+
+# Transformando os resultados da PCoA em um dataframe e incluindo os metadados
+pcoa_df_bray = as.data.frame(pcoa_result_bray$points)
+colnames(pcoa_df_bray) = c("PC1", "PC2", "PC3")
+pcoa_df_bray$Sample = row.names(pcoa_df_bray)
+pcoa_df_bray = merge(pcoa_df_bray, metadata, by = "Sample", all.x = TRUE)
+
+# Variância explicada (Bray-Curtis)
+var_exp_bray = round(pcoa_result_bray$eig / 
+                    sum(pcoa_result_bray$eig) * 100, 2)
+var_exp_bray[1:3]
+
+# Organizando os metadados na mesma ordem da matriz de distância
+metadata_bray = metadata[match(labels(bray_curtis), metadata$Sample), ]
+stopifnot(all(metadata_bray$Sample == labels(bray_curtis)))
+
+# Executando o teste PERMANOVA e extraindo R² e p-valor
+set.seed(123)
+permanova_result_bray = adonis2(bray_curtis ~ Disease, 
+                                data = metadata_bray)
+r2_value = round(permanova_result_bray$R2[1], 3)
+p_value = round(permanova_result_bray$`Pr(>F)`[1], 3)
+
+# PCoA (Bray-Curtis)
+pcoa_bray = ggplot(pcoa_df_bray, aes(x = PC1, y = PC2, 
+                                     color = Disease, fill = Disease)) +
+  geom_point(size = 3, alpha = 1) +
+  stat_ellipse(aes(group = Disease), level = 0.95, geom = "polygon", color = NA, alpha = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.4, color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4, color = "grey50") +
+  labs(title = "Bray–Curtis dissimilarity", 
+       x = paste0("PCoA1 (", var_exp_bray[1], "%)"),
+       y = paste0("PCoA2 (", var_exp_bray[2], "%)")) +
+  scale_color_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  scale_fill_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  annotate("text", x = -Inf, y = Inf,
+    label = paste0("PERMANOVA:\nR² = ", r2_value,
+                   "\np = ", format.pval(p_value, digits = 3)), 
+    hjust = -0.1, vjust = 1.3, size = 4) +
+  theme_classic() +
+  theme(legend.position = c(0.98, 0.98), 
+        legend.justification = c(1, 1),
+        legend.text = element_text(size = 10),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        axis.text.x = element_text(colour = "black", size = 10),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(colour = "black", face = "bold", size = 10))
+print(pcoa_bray)
+```
+
+## Índice de Jaccard
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+# Transformar as contagens em presença/ausência
+ps_pa <- transform_sample_counts(ps, function(x) ifelse(x > 0, 1, 0))
+
+# Calculando a matriz de dissimilaridade de Jaccard
+jaccard = phyloseq::distance(ps_pa, method = "jaccard", binary = TRUE)
+
+# Realizando a PCoA
+pcoa_result_jaccard = cmdscale(jaccard, k = 3, eig = TRUE, add = TRUE)
+
+# Transformando os resultados da PCoA em um dataframe e incluindo os metadados
+pcoa_df_jaccard = as.data.frame(pcoa_result_jaccard$points)
+colnames(pcoa_df_jaccard) = c("PC1", "PC2", "PC3")
+pcoa_df_jaccard$Sample = row.names(pcoa_df_jaccard)
+pcoa_df_jaccard = merge(pcoa_df_jaccard, metadata, by = "Sample", all.x = TRUE)
+
+# Variância explicada (Jaccard)
+var_exp_jaccard = round(pcoa_result_jaccard$eig /
+                        sum(pcoa_result_jaccard$eig[pcoa_result_jaccard$eig > 0]) * 100, 2)
+var_exp_jaccard[1:3]
+
+# Organizando os metadados na mesma ordem da matriz de distância
+metadata_jaccard = metadata[match(labels(jaccard), metadata$Sample), ]
+stopifnot(all(metadata_jaccard$Sample == labels(jaccard)))
+
+# Executando o teste PERMANOVA e extraindo R² e p-valor
+set.seed(123)
+permanova_result_jaccard = adonis2(jaccard ~ Disease, 
+                                   data = metadata_jaccard)
+r2_value_jaccard = round(permanova_result_jaccard$R2[1], 3)
+p_value_jaccard = permanova_result_jaccard$`Pr(>F)`[1]
+
+# PCoA (Jaccard)
+pcoa_jaccard = ggplot(pcoa_df_jaccard, aes(x = PC1, y = PC2,
+                                           color = Disease, fill = Disease)) +
+  geom_point(size = 3, alpha = 1) +
+  stat_ellipse(aes(group = Disease), level = 0.95, geom = "polygon",
+               color = NA, alpha = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.4, color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4, color = "grey50") +
+  labs(title = "Jaccard index",
+       x = paste0("PCoA1 (", var_exp_jaccard[1], "%)"),
+       y = paste0("PCoA2 (", var_exp_jaccard[2], "%)")) +
+  scale_color_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  scale_fill_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  annotate("text", x = -Inf, y = Inf,
+           label = paste0("PERMANOVA:\nR² = ", r2_value_jaccard,
+                          "\np = ", format.pval(p_value_jaccard, digits = 3)),
+           hjust = -0.1, vjust = 1.3, size = 4) +
+  theme_classic() +
+  theme(legend.position = c(0.98, 0.98),
+        legend.justification = c(1, 1),
+        legend.text = element_text(size = 10),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        axis.text.x = element_text(colour = "black", size = 10),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(colour = "black", face = "bold", size = 10))
+print(pcoa_jaccard)
+```
+
+## Weighted UniFrac
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+# Calculando a matriz de distância Weighted UniFrac
+weighted_unifrac = phyloseq::distance(ps, method = "wunifrac")
+
+# Realizando a PCoA
+pcoa_result_wunifrac = cmdscale(weighted_unifrac, k = 3, eig = TRUE, add = TRUE)
+
+# Transformando os resultados da PCoA em um dataframe e incluindo os metadados
+pcoa_df_wunifrac = as.data.frame(pcoa_result_wunifrac$points)
+colnames(pcoa_df_wunifrac) = c("PC1", "PC2", "PC3")
+pcoa_df_wunifrac$Sample = row.names(pcoa_df_wunifrac)
+pcoa_df_wunifrac = merge(pcoa_df_wunifrac, metadata, by = "Sample", all.x = TRUE)
+
+# Variância explicada (Weighted UniFrac)
+var_exp_wunifrac = round(pcoa_result_wunifrac$eig /
+                         sum(pcoa_result_wunifrac$eig[pcoa_result_wunifrac$eig > 0]) * 100, 2)
+var_exp_wunifrac[1:3]
+
+# Organizando os metadados na mesma ordem da matriz de distância
+metadata_wunifrac = metadata[match(labels(weighted_unifrac), metadata$Sample), ]
+stopifnot(all(metadata_wunifrac$Sample == labels(weighted_unifrac)))
+
+# Executando o teste PERMANOVA e extraindo R² e p-valor
+set.seed(123)
+permanova_result_wunifrac = adonis2(weighted_unifrac ~ Disease, 
+                                    data = metadata_wunifrac)
+r2_value_wunifrac = round(permanova_result_wunifrac$R2[1], 3)
+p_value_wunifrac = permanova_result_wunifrac$`Pr(>F)`[1]
+
+# PCoA (Weighted UniFrac)
+pcoa_wunifrac = ggplot(pcoa_df_wunifrac, aes(x = PC1, y = PC2,
+                                             color = Disease, fill = Disease)) +
+  geom_point(size = 3, alpha = 1) +
+  stat_ellipse(aes(group = Disease), level = 0.95, geom = "polygon",
+               color = NA, alpha = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.4, color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4, color = "grey50") +
+  labs(title = "Weighted Unifrac",
+       x = paste0("PCoA1 (", var_exp_wunifrac[1], "%)"),
+       y = paste0("PCoA2 (", var_exp_wunifrac[2], "%)")) +
+  scale_color_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  scale_fill_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  annotate("text", x = -Inf, y = Inf,
+           label = paste0("PERMANOVA:\nR² = ", r2_value_wunifrac,
+                          "\np = ", format.pval(p_value_wunifrac, digits = 3)),
+           hjust = -0.1, vjust = 1.3, size = 4) +
+  theme_classic() +
+  theme(legend.position = c(0.98, 0.98),
+        legend.justification = c(1, 1),
+        legend.text = element_text(size = 10),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        axis.text.x = element_text(colour = "black", size = 10),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(colour = "black", face = "bold", size = 10))
+print(pcoa_wunifrac)
+```
+
+## Unweighted UniFrac
+
+```{r}
+# Calculando a matriz de distância Unweighted UniFrac
+unweighted_unifrac = phyloseq::distance(ps, method = "unifrac")
+
+# Realizando a PCoA
+pcoa_result_unifrac = cmdscale(unweighted_unifrac, k = 3, eig = TRUE, add = TRUE)
+
+# Transformando os resultados da PCoA em um dataframe e incluindo os metadados
+pcoa_df_unifrac = as.data.frame(pcoa_result_unifrac$points)
+colnames(pcoa_df_unifrac) = c("PC1", "PC2", "PC3")
+pcoa_df_unifrac$Sample = row.names(pcoa_df_unifrac)
+pcoa_df_unifrac = merge(pcoa_df_unifrac, metadata, by = "Sample", all.x = TRUE)
+
+# Variância explicada (Unweighted UniFrac)
+var_exp_unifrac = round(pcoa_result_unifrac$eig /
+                        sum(pcoa_result_unifrac$eig[pcoa_result_unifrac$eig > 0]) * 100, 2)
+var_exp_unifrac[1:3]
+
+# Organizando os metadados na mesma ordem da matriz de distância
+metadata_unifrac = metadata[match(labels(unweighted_unifrac), metadata$Sample), ]
+stopifnot(all(metadata_unifrac$Sample == labels(unweighted_unifrac)))
+
+# Executando o teste PERMANOVA e extraindo R² e p-valor
+set.seed(123)
+permanova_result_unifrac = adonis2(unweighted_unifrac ~ Disease,
+                                   data = metadata_unifrac)
+r2_value_unifrac = round(permanova_result_unifrac$R2[1], 3)
+p_value_unifrac = permanova_result_unifrac$`Pr(>F)`[1]
+
+# PCoA (Unweighted UniFrac)
+pcoa_unifrac = ggplot(pcoa_df_unifrac, aes(x = PC1, y = PC2,
+                                           color = Disease, fill = Disease)) +
+  geom_point(size = 3, alpha = 1) +
+  stat_ellipse(aes(group = Disease), level = 0.95, geom = "polygon",
+               color = NA, alpha = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.4, color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4, color = "grey50") +
+  labs(title = "Unweighted Unifrac",
+       x = paste0("PCoA1 (", var_exp_unifrac[1], "%)"),
+       y = paste0("PCoA2 (", var_exp_unifrac[2], "%)")) +
+  scale_color_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  scale_fill_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  annotate("text", x = -Inf, y = Inf,
+           label = paste0("PERMANOVA:\nR² = ", r2_value_unifrac,
+                          "\np = ", format.pval(p_value_unifrac, digits = 3)),
+           hjust = -0.1, vjust = 1.3, size = 4) +
+  theme_classic() +
+  theme(legend.position = c(0.98, 0.98),
+        legend.justification = c(1, 1),
+        legend.text = element_text(size = 10),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        axis.text.x = element_text(colour = "black", size = 10),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(colour = "black", face = "bold", size = 10))
+print(pcoa_unifrac)
+```
+
+# Abundância diferencial (LEfSE)
+
+```{r message=FALSE, warning=FALSE, fig.width=8, fig.height=8}
+# Rodando o LEfSe
+lefse_res = run_lefse(
+  ps,
+  group = "Disease",
+  taxa_rank = "Genus",
+  norm = "CPM",
+  kw_cutoff = 0.05,
+  lda_cutoff = 3)
+
+# Extrair o resultado do LEfSe
+lefse_table <- marker_table(lefse_res)
+
+# Converter cada coluna da marker_table em um vetor comum
+lefse_df <- data.frame(
+  lapply(lefse_table@.Data, as.vector),
+  stringsAsFactors = FALSE,
+  check.names = FALSE)
+
+# Corrigindo os nomes das colunas
+colnames(lefse_df) = c("feature", 
+                        "enrich_group", 
+                        "ef_lda", 
+                        "pvalue", 
+                        "padj")
+
+# Definir ordem desejada dos grupos
+lefse_df = lefse_df %>%
+  mutate(enrich_group = factor(enrich_group, levels = c("FD", "GC", "GU"))) %>%
+  arrange(enrich_group, desc(ef_lda))
+
+# Criar ordem dos gêneros
+custom_order = rev(lefse_df$feature)
+
+# Aplicar no dataframe
+lefse_df$feature = factor(lefse_df$feature, levels = custom_order)
+
+# Bubble plot
+LDA_tissue = ggplot(lefse_df, aes(x = ef_lda, y = feature,size = abs(ef_lda), 
+                                      color = enrich_group)) +
+  geom_point(alpha = 1) +
+  scale_color_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081"),
+                     labels = c("FD" = "Enriched in FD", 
+                                "GC" = "Enriched in GC", 
+                                "GU" = "Enriched in GU")) +
+  scale_size_continuous(range = c(2, 10), guide = "none") +
+  labs(x = "LDA score (log10)", y = "", color = "Disease") +
+  theme_bw() +
+  theme(
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.position = "top",
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(colour = "black", size = 10, face = "italic"),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10))
+print(LDA_tissue)
+
+# Selecionando os 9 gêneros com maiores valores de LDA por tecido
+top9_genera = c("Methylobacterium", "Sphingomonas", "Novosphingobium", 
+                 "Veillonella", "Limosilactobacillus", "Comamonas", 
+                 "Lactococcus", "Prevotella", "Haemophilus")
+
+# Identificar os gêneros que pertencem ao top9
+genera_selecionados = tax_table(ps_genus_relative)[, "Genus"] %in% top9_genera
+
+# Manter apenas os 9 gêneros selecionados
+ps_top9 = prune_taxa(genera_selecionados, ps_genus_relative)
+
+# Transformando em dataframe longo
+df_top9 = psmelt(ps_top9)
+df_top9 = df_top9 %>%
+  mutate(Genus = factor(Genus, levels = top9_genera),
+         Disease = factor(Disease, levels = c("FD","GC","GU")))
+
+# Boxplot
+p_top9 = ggplot(df_top9, aes(x = Disease, y = Abundance)) + 
+  geom_boxplot(aes(fill = Disease, color = Disease), 
+               size = 1, alpha = 0.6, outlier.shape = NA) +
+  stat_boxplot(aes(color = Disease), geom = "errorbar", linewidth = 1, size = 1) +
+  geom_jitter(aes(color = Disease), width = 0.1, size = 2, alpha = 1) +
+  scale_color_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  scale_fill_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  facet_wrap(~ Genus, scales = "free_y", ncol = 3) +
+  scale_y_log10() +
+  theme_bw() +
+  labs(x = "", y = "Relative abundance") +
+  theme(legend.position = "top",
+        legend.title = element_text(colour = "black", face = "bold", size = 12),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(colour = "black", face = "bold.italic", size = 10),
+        strip.background = element_rect(fill = "white", colour = "black")) +
+  stat_compare_means(label = "p.format", size = 3)
+print(p_top9)
+
+# Violin plot
+violin_top9 = ggplot(df_top9, aes(x = Disease, y = Abundance)) + 
+  geom_violin(aes(fill = Disease), trim = FALSE, scale = "width", alpha = 0.6, color = NA) +
+  geom_jitter(aes(color = Disease), width = 0.1, size = 2, alpha = 1) +
+  scale_y_log10() +
+  facet_wrap(~Genus, scales = "free_y", ncol = 3) +
+  scale_fill_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  scale_color_manual(values = c("FD" = "#238B45", "GC" = "#A50F15", "GU" = "#084081")) +
+  theme_bw() +
+  labs(x = "", y = "Relative abundance") +
+  theme(legend.position = "top",
+        legend.title = element_text(colour = "black", face = "bold", size = 12),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(colour = "black", face = "bold.italic", size = 10),
+        strip.background = element_rect(fill = "white", colour = "black")) +
+  stat_compare_means(label = "p.format", size = 3)
+print(violin_top9)
+```

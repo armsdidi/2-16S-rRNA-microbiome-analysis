@@ -1,0 +1,485 @@
+---
+title: "3_Inferência_de_ASVs"
+author: Diego Pereira
+format: html
+toc: true
+toc-depth: 3
+embed-resources: true
+number-sections: true
+page-layout: full
+fontsize: 12pt
+mainfont: Arial
+editor: visual
+editor_options: 
+  chunk_output_type: console
+chunk_output_type: console
+---
+
+# Pacotes e diretórios:
+
+```{r}
+# Carregando os pacotes:
+library(dada2)
+library(phyloseq)
+library(ggplot2)
+library(openxlsx)
+library(tibble)
+
+# Definindo os diretórios:
+raw_path <- "16S_FASTQ/RAW_FASTQ"
+filtered_path <- "16S_FASTQ/FILT_FASTQ"
+output_path <- "16S_DADA2_OUTPUT"
+
+# Definindo o banco de dados taxonômico:
+database_path <- "DATABASE/SILVA_138.2/silva_nr99_v138.2_toGenus_trainset.fa.gz"
+
+# Criando os diretórios de saída:
+dir.create(
+  filtered_path,
+  recursive = TRUE,
+  showWarnings = FALSE)
+
+dir.create(
+  output_path,
+  recursive = TRUE,
+  showWarnings = FALSE)
+```
+
+# Identificação dos arquivos FASTQ (R1 e R2):
+
+```{r}
+# Leituras forward:
+fnFs <- sort(
+  list.files(
+    raw_path,
+    pattern = "_1.fastq.gz$",
+    full.names = TRUE))
+
+# Leituras reverse:
+fnRs <- sort(
+  list.files(
+    raw_path,
+    pattern = "_2.fastq.gz$",
+    full.names = TRUE))
+
+# Extraindo os nomes das amostras:
+sample.names <- basename(fnFs)
+sample.names <- sub(
+  "_1\\.fastq\\.gz$",
+  "",
+  sample.names)
+
+# Extraindo os nomes das amostras R2 para conferência:
+sample.names.R <- basename(fnRs)
+sample.names.R <- sub(
+  "_2\\.fastq\\.gz$",
+  "",
+  sample.names.R)
+
+# Verificando o número de arquivos:
+length(fnFs)
+length(fnRs)
+
+# Verificando se existe o mesmo número de arquivos R1 e R2:
+stopifnot(length(fnFs) == length(fnRs))
+
+# Verificando se os arquivos R1 e R2 correspondem às mesmas amostras:
+stopifnot(identical(sample.names, sample.names.R))
+
+# Verificando os nomes das amostras:
+head(sample.names)
+```
+
+As verificações acima garantem que cada amostra possua um arquivo forward e um arquivo reverse correspondente antes do início do processamento.
+
+# Avaliação da qualidade:
+
+```{r}
+# Visualizando o perfil de qualidade das reads forward:
+plotQualityProfile(fnFs[1:2])
+
+# Visualizando o perfil de qualidade das reads reverse:
+plotQualityProfile(fnRs[1:2])
+```
+
+Os perfis de qualidade devem ser avaliados antes da definição dos parâmetros de filtragem e truncamento. O ponto de truncamento deve preservar regiões de boa qualidade e comprimento suficiente para permitir a posterior sobreposição das reads paired-end.
+
+# Definição dos arquivos filtrados:
+
+```{r}
+# Arquivos forward filtrados:
+filtFs <- file.path(
+  filtered_path,
+  paste0(sample.names, "_1.filt.fastq.gz"))
+
+# Arquivos reverse filtrados:
+filtRs <- file.path(
+  filtered_path,
+  paste0(sample.names, "_2.filt.fastq.gz"))
+```
+
+# Filtragem por qualidade:
+
+```{r}
+# Filtrando as reads:
+out <- filterAndTrim(
+  fnFs,
+  filtFs,
+  fnRs,
+  filtRs,
+  truncLen = c(245, 245),
+  trimLeft = c(0, 0),
+  maxN = 0,
+  maxEE = c(2, 5),
+  truncQ = 2,
+  rm.phix = TRUE,
+  compress = TRUE,
+  multithread = TRUE)
+
+# Verificando o resultado:
+head(out)
+```
+
+O ponto de truncamento deve preservar comprimento suficiente para que as reads forward e reverse apresentem sobreposição durante o merge. Para este dataset, foram mantidos 245 pb em ambas as reads (`truncLen = c(245, 245)`).
+
+Como os primers não foram detectados nos arquivos FASTQ durante o controle de qualidade realizado previamente com Cutadapt, não foi aplicado truncamento inicial (`trimLeft = c(0, 0)`).
+
+# Aprendizado do modelo de erros:
+
+```{r}
+# Aprendendo o modelo de erros das reads forward:
+errF <- learnErrors(
+  filtFs,
+  multithread = TRUE)
+
+# Aprendendo o modelo de erros das reads reverse:
+errR <- learnErrors(
+  filtRs,
+  multithread = TRUE)
+
+# Visualizando o modelo de erros forward:
+plotErrors(
+  errF,
+  nominalQ = TRUE)
+
+# Visualizando o modelo de erros reverse:
+plotErrors(
+  errR,
+  nominalQ = TRUE)
+```
+
+Nesta etapa, o DADA2 estima as taxas de erro de sequenciamento em função dos valores de qualidade observados nas reads forward e reverse.
+
+# Dereplicação:
+
+```{r}
+# Dereplicando as reads forward:
+derepFs <- derepFastq(filtFs)
+
+# Dereplicando as reads reverse:
+derepRs <- derepFastq(filtRs)
+
+# Adicionando os nomes das amostras:
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+```
+
+A dereplicação agrupa sequências idênticas dentro de cada amostra, reduzindo a redundância computacional antes da inferência das variantes.
+
+# Inferência das ASVs:
+
+```{r}
+# Inferência das ASVs nas reads forward:
+dadaFs <- dada(
+  derepFs,
+  err = errF,
+  multithread = TRUE)
+
+# Inferência das ASVs nas reads reverse:
+dadaRs <- dada(
+  derepRs,
+  err = errR,
+  multithread = TRUE)
+```
+
+Nesta etapa ocorre o denoising. O DADA2 utiliza os modelos de erro aprendidos para distinguir variações decorrentes de erros de sequenciamento de variantes biológicas, permitindo a inferência das Amplicon Sequence Variants (ASVs).
+
+# Merge das reads paired-end:
+
+```{r}
+# Realizando o merge das reads forward e reverse:
+mergers <- mergePairs(
+  dadaFs,
+  derepFs,
+  dadaRs,
+  derepRs,
+  verbose = TRUE)
+
+# Conferindo o resultado do merge:
+head(mergers[[1]])
+```
+
+O DADA2 compara a região de sobreposição entre as reads forward e reverse e mantém os pares que atendem aos critérios de compatibilidade.
+
+Neste dataset, foram mantidos 245 pb em ambas as reads. As sequências reconstruídas apresentaram predominantemente aproximadamente 253 pb, correspondendo a cerca de 237 pb de sobreposição:
+
+245 + 245 − 253 = 237 pb
+
+A inspeção dos pares mais abundantes confirmou ampla sobreposição entre as reads, incluindo pares sem mismatches ou indels, indicando que `truncLen = c(245, 245)` é adequado para este dataset.
+
+# Construção da tabela de ASVs:
+
+```{r}
+# Construindo a tabela de ASVs:
+seqtab <- makeSequenceTable(mergers)
+
+# Verificando as dimensões:
+dim(seqtab)
+
+# Verificando a distribuição dos comprimentos das ASVs:
+sort(
+  table(nchar(getSequences(seqtab))),
+  decreasing = TRUE)
+```
+
+A distribuição dos comprimentos demonstrou predominância de ASVs entre 252 e 254 pb, principalmente com 253 pb, consistente com o comprimento das sequências reconstruídas após o merge.
+
+Sequências com comprimentos atípicos não são removidas nesta etapa, permitindo que a remoção de quimeras e a posterior classificação taxonômica sejam utilizadas para avaliar essas variantes.
+
+# Remoção das quimeras:
+
+```{r}
+# Removendo as sequências quiméricas:
+seqtab.nochim <- removeBimeraDenovo(
+  seqtab,
+  method = "consensus",
+  multithread = TRUE,
+  verbose = TRUE)
+
+# Calculando a proporção de reads mantidas:
+chimera_retention <- sum(seqtab.nochim) / sum(seqtab)
+chimera_retention
+
+# Verificando a distribuição dos comprimentos após remoção das quimeras:
+sort(
+  table(nchar(getSequences(seqtab.nochim))),
+  decreasing = TRUE)
+```
+
+Para este dataset, a remoção de quimeras apresentou elevada retenção de reads, indicando que as ASVs identificadas como biméricas representavam uma pequena proporção da abundância total.
+
+# Acompanhamento das reads durante o pipeline:
+
+```{r}
+# Função para contabilizar as reads:
+getN <- function(x) {
+  sum(getUniques(x))
+}
+
+# Construindo a tabela de acompanhamento:
+track <- cbind(
+  input = out[, 1],
+  filtered = out[, 2],
+  denoisedF = sapply(dadaFs, getN),
+  denoisedR = sapply(dadaRs, getN),
+  merged = sapply(mergers, getN),
+  nonchim = rowSums(seqtab.nochim))
+
+# Adicionando os nomes das amostras:
+rownames(track) <- sample.names
+
+# Convertendo para data.frame:
+track <- as.data.frame(track)
+
+# Adicionando os nomes das amostras como coluna:
+track <- rownames_to_column(track, "Sample")
+
+# Visualizando:
+head(track)
+
+# Salvando:
+write.xlsx(track, file.path(output_path, "dada2_read_tracking.xlsx"))
+```
+
+A tabela de acompanhamento permite avaliar a retenção de reads em cada etapa do processamento, desde os arquivos FASTQ originais até a remoção das sequências quiméricas.
+
+# Classificação taxonômica:
+
+```{r}
+# Realizando a classificação taxonômica:
+taxa <- assignTaxonomy(
+  seqtab.nochim,
+  database_path,
+  multithread = TRUE)
+
+# Criando uma cópia para visualização:
+taxa.print <- taxa
+
+# Removendo as sequências dos nomes das linhas apenas para visualização:
+rownames(taxa.print) <- NULL
+
+# Visualizando:
+head(taxa.print)
+```
+
+A classificação taxonômica utilizando o banco SILVA permite atribuir as ASVs aos seguintes níveis taxonômicos:
+
+Kingdom → Phylum → Class → Order → Family → Genus
+
+# Identificação opcional até o nível de espécie:
+
+```{r eval=FALSE}
+# Definindo o banco de espécies:
+silva_species <- "DATABASE/SILVA_138.2/silva_v138.2_assignSpecies.fa.gz"
+
+# Realizando a atribuição em nível de espécie:
+taxa <- addSpecies(
+  taxa,
+  silva_species)
+```
+
+A identificação em nível de espécie é opcional. Sequências do gene 16S rRNA nem sempre apresentam resolução suficiente para discriminar espécies, especialmente quando apenas uma região hipervariável é analisada. Por esse motivo, o nível de gênero pode ser utilizado como principal nível taxonômico em análises posteriores.
+
+# Renomeação das ASVs:
+
+```{r}
+# Armazenando as sequências originais das ASVs:
+asv_seqs <- colnames(seqtab.nochim)
+
+# Criando identificadores simplificados:
+asv_names <- paste0(
+  "ASV",
+  seq_len(ncol(seqtab.nochim)))
+
+# Renomeando as ASVs na tabela de abundância:
+colnames(seqtab.nochim) <- asv_names
+
+# Renomeando as ASVs na tabela taxonômica:
+rownames(taxa) <- asv_names
+
+# Criando uma tabela de correspondência ASV-sequência:
+asv_table <- data.frame(
+  ASV = asv_names,
+  Sequence = asv_seqs)
+
+# Salvando a tabela:
+write.xlsx(asv_table, file.path(output_path, "ASV_sequences.xlsx"), row.names = FALSE)
+```
+
+Os identificadores baseados nas sequências completas foram substituídos por identificadores simplificados (`ASV1`, `ASV2`, etc.). A correspondência entre cada identificador e sua sequência original é preservada no arquivo `ASV_sequences.csv`.
+
+# Construção do objeto phyloseq:
+
+```{r}
+# Importando os metadados:
+metadata <- read.xlsx("metadata.xlsx")
+
+# Definindo o ID das amostras como rownames:
+metadata <- column_to_rownames(metadata,"ID")
+
+# Verificando se as amostras da tabela de ASVs estão presentes nos metadados:
+stopifnot(
+  setequal(
+    rownames(seqtab.nochim),
+    rownames(metadata)))
+
+# Reordenando os metadados de acordo com a tabela de ASVs:
+metadata <- metadata[
+  rownames(seqtab.nochim),
+  ,
+  drop = FALSE]
+
+# Confirmando que os nomes e a ordem das amostras são idênticos:
+stopifnot(
+  identical(
+    rownames(seqtab.nochim),
+    rownames(metadata)))
+
+# Criando a tabela de abundância:
+OTU <- otu_table(
+  seqtab.nochim,
+  taxa_are_rows = FALSE)
+
+# Criando a tabela taxonômica:
+TAX <- tax_table(taxa)
+
+# Criando os dados das amostras:
+SAM <- sample_data(metadata)
+
+# Verificando a correspondência das ASVs:
+stopifnot(
+  identical(
+    taxa_names(OTU),
+    taxa_names(TAX)))
+
+# Construindo o objeto phyloseq:
+ps <- phyloseq(
+  OTU,
+  TAX,
+  SAM)
+
+# Verificando:
+ps
+```
+
+As verificações realizadas antes da construção do objeto garantem a correspondência entre os identificadores das amostras na tabela de ASVs e nos metadados, bem como entre os identificadores das ASVs nas tabelas de abundância e taxonomia.
+
+# Remoção de táxons indesejados:
+
+```{r}
+# Mantendo apenas sequências classificadas como Bacteria:
+ps <- subset_taxa(
+  ps,
+  Kingdom == "Bacteria")
+
+# Removendo cloroplastos:
+ps <- subset_taxa(
+  ps,
+  is.na(Order) | Order != "Chloroplast")
+
+# Removendo mitocôndrias:
+ps <- subset_taxa(
+  ps,
+  is.na(Family) | Family != "Mitochondria")
+
+# Removendo ASVs sem reads:
+ps <- prune_taxa(
+  taxa_sums(ps) > 0,
+  ps)
+
+# Verificando o objeto final:
+ps
+```
+
+Nesta etapa são removidas sequências não bacterianas, cloroplastos, mitocôndrias e ASVs sem reads após a filtragem taxonômica.
+
+Filtros analíticos adicionais de prevalência ou abundância não são aplicados neste script. Esses filtros podem ser realizados posteriormente, de acordo com os objetivos específicos das análises de composição, diversidade e abundância diferencial.
+
+# Verificação e salvamento do objeto phyloseq:
+
+```{r}
+# Número de amostras:
+nsamples(ps)
+
+# Número de ASVs:
+ntaxa(ps)
+
+# Número total de reads:
+sum(sample_sums(ps))
+
+# Verificando se existem amostras sem reads:
+sum(sample_sums(ps) == 0)
+
+# Verificando os nomes das amostras:
+head(sample_names(ps))
+
+# Verificando os nomes das ASVs:
+head(taxa_names(ps))
+
+# Salvando o objeto phyloseq:
+save(ps, file = file.path(output_path, "16S_phyloseq.RData"))
+
+ps@tax_table
+```
+
+O objeto `phyloseq` resultante representa o produto final do processamento das sequências 16S rRNA. Esse objeto pode ser carregado em um script independente para realização das análises de composição taxonômica, diversidade alfa e beta, abundância diferencial e demais análises estatísticas.

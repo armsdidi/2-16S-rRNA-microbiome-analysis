@@ -1,0 +1,155 @@
+---
+title: "4_Análise_filogenética"
+author: Diego Pereira
+format: html
+toc: true
+toc-depth: 3
+embed-resources: true
+number-sections: true
+page-layout: full
+fontsize: 12pt
+mainfont: Arial
+editor: visual
+editor_options: 
+  chunk_output_type: console
+chunk_output_type: console
+---
+
+# Pacotes e dados:
+
+```{r}
+# Carregando os pacotes:
+library(phyloseq)
+library(Biostrings)
+library(DECIPHER)
+library(phangorn)
+library(openxlsx)
+
+# Carregando o objeto phyloseq:
+load("16S_DADA2_OUTPUT/16S_phyloseq.RData")
+
+# Importando a tabela que relaciona as ASVs às sequências:
+asv_table <- read.xlsx("16S_DADA2_OUTPUT/ASV_sequences.xlsx")
+
+# Verificando:
+head(asv_table)
+
+# Verificando se todas as ASVs do phyloseq estão presentes:
+stopifnot(
+  all(taxa_names(ps) %in% asv_table$ASV))
+
+# Reordenando a tabela de acordo com o objeto phyloseq:
+asv_table <- asv_table[
+  match(taxa_names(ps), asv_table$ASV),]
+
+# Confirmando a correspondência:
+stopifnot(
+  identical(
+    taxa_names(ps),
+    asv_table$ASV))
+```
+
+# Preparação e alinhamento das sequências:
+
+```{r}
+# Convertendo as sequências para DNAStringSet:
+seqs <- DNAStringSet(
+  asv_table$Sequence)
+
+# Adicionando os identificadores das ASVs:
+names(seqs) <- asv_table$ASV
+
+# Realizando o alinhamento múltiplo:
+alignment <- AlignSeqs(
+  seqs,
+  anchor = NA)
+
+# Convertendo o alinhamento para o formato phyDat:
+phang.align <- phyDat(
+  as(
+    alignment,
+    "matrix"),
+  type = "DNA")
+
+# Verificando:
+alignment
+phang.align
+```
+
+# Construção da árvore filogenética inicial:
+
+```{r}
+# Calculando a matriz de distância:
+dm <- dist.ml(
+  phang.align)
+
+# Construindo a árvore inicial por Neighbor Joining:
+treeNJ <- NJ(dm)
+
+# Verificando:
+treeNJ
+
+# Visualizando:
+plot(
+  treeNJ,
+  cex = 0.5,
+  main = "Árvore inicial - Neighbor Joining")
+```
+
+# Otimização por máxima verossimilhança:
+
+```{r}
+# Ajustando o modelo inicial:
+fit <- pml(
+  treeNJ,
+  data = phang.align)
+
+# Otimizando a árvore:
+fitGTR <- optim.pml(
+  fit,
+  model = "GTR",
+  optInv = TRUE,
+  optGamma = TRUE,
+  rearrangement = "stochastic")
+
+# Extraindo a árvore final:
+tree <- fitGTR$tree
+
+# Verificando:
+fitGTR
+tree
+
+# Visualizando a árvore final:
+plot(
+  tree,
+  cex = 0.5,
+  main = "Árvore filogenética das ASVs")
+```
+
+# Integração da árvore ao objeto phyloseq:
+
+```{r}
+# Verificando o número de ASVs no objeto phyloseq:
+length(taxa_names(ps))
+
+# Verificando o número de ASVs na árvore:
+length(tree$tip.label)
+
+# Confirmando a correspondência entre as ASVs:
+stopifnot(
+  setequal(
+    taxa_names(ps),
+    tree$tip.label))
+
+# Adicionando a árvore ao objeto phyloseq:
+phy_tree(ps) <- tree
+
+# Verificando o objeto final:
+ps
+
+# Verificando a árvore:
+phy_tree(ps)
+
+# Salvando o objeto phyloseq com a árvore:
+save(ps, file = "16S_DADA2_OUTPUT/16S_phyloseq_tree.RData")
+```
