@@ -197,4 +197,4 @@ Este projeto é distribuído sob a **Licença MIT**. Consulte o arquivo `LICENSE
 
 **Diego Pereira**
 
-Cientista em Bioinformática | Doutor em Genética e Biologia Molecular | Análise de dados transcriptômicos e metagenômicos
+Bioinformatics Scientist | PhD in Genetics and Molecular Biology | Metagenomic and Metatranscriptomic Data Analysis
