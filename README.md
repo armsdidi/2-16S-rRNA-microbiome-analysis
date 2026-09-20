@@ -45,7 +45,7 @@ O script utiliza o **FastQC** para avaliar a qualidade das sequências, o **Cuta
 
 ---
 
-### `3_Inferência_de_ASVs.R`
+### `3_Inferência_de_ASVs.Rmd`
 
 Realiza o processamento das sequências e a inferência de ASVs utilizando o pacote **DADA2**.
 
@@ -57,7 +57,7 @@ As sequências representativas são posteriormente submetidas à atribuição ta
 
 ---
 
-### `4_Análise_filogenética.R`
+### `4_Análise_filogenética.Rmd`
 
 Realiza o alinhamento múltiplo das sequências representativas e a reconstrução da árvore filogenética das ASVs.
 
@@ -69,7 +69,7 @@ A tabela de ASVs, a classificação taxonômica, os metadados das amostras e a �
 
 ---
 
-### `5_Caracterização_da_comunidade_microbiana.R`
+### `5_Caracterização_da_comunidade_microbiana.Rmd`
 
 Realiza a caracterização taxonômica e ecológica da comunidade microbiana.
 
