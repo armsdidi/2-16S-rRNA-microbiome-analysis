@@ -171,7 +171,7 @@ Para reproduzir o fluxo, os usuários devem adaptar os números de acesso, camin
 
 Os scripts estão numerados de acordo com a ordem recomendada de execução.
 
-Os scripts Shell (`.sh`) contêm as etapas de download, controle de qualidade e pré-processamento inicial. Os scripts R (`.Rmd`) contêm a inferência de ASVs, atribuição taxonômica, reconstrução filogenética, análises estatísticas, análises ecológicas e visualizações.
+Os scripts Shell (`.sh`) contêm as etapas de download, controle de qualidade e pré-processamento inicial. Os scripts R Markdown (`.Rmd`) contêm a inferência de ASVs, atribuição taxonômica, reconstrução filogenética, análises estatísticas, análises ecológicas e visualizações.
 
 Os parâmetros de filtragem e truncamento do DADA2 devem ser definidos após a inspeção dos perfis de qualidade das leituras. Esses parâmetros não devem ser aplicados automaticamente a conjuntos de dados produzidos com diferentes regiões do gene 16S rRNA, plataformas de sequenciamento ou comprimentos de leitura.
 
