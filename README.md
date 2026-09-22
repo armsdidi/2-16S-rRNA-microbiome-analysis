@@ -195,4 +195,4 @@ Este projeto é distribuído sob a **Licença MIT**. Consulte o arquivo `LICENSE
 
 **Diego Pereira**
 
-Bioinformatics Scientist | PhD in Genetics and Molecular Biology | Metagenomic and Metatranscriptomic Data Analysis
+Bioinformatics Scientist | PhD in Genetics & Molecular Biology | NGS | R | Linux/Bash | Metagenomics & Metatranscriptomics
